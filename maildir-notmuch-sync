@@ -34,7 +34,7 @@
 # to the script):
 #
 #     [Account personal]
-#     
+#
 #     localrepository = personal-local
 #     remoterepository = personal-remote
 #     presynchook  = maildir-notmuch-sync "~/var/mail/accounts/personal"
@@ -47,7 +47,7 @@
 # Dry-run
 # ----------------------------------------------------------------------
 #
-# Call the script directly from the command line with the intial 
+# Call the script directly from the command line with the initial
 # argument "--dry-run" to test the result:
 #
 #     maildir-notmuch-sync "--dry-run" "~/var/mail/accounts/personal"
@@ -63,15 +63,14 @@
 # Maildir Information
 # ----------------------------------
 
-INBOX="INBOX"       # (mutt's spool dir)  - both the tag and folder
+INBOX="inbox"       # (mutt's spool dir)  - both the tag and folder
 SENT="sent"         # (mutt's record dir) - both the tag and folder
-ARCHIVE="archive"   # (mutt's mbox/received) - both the tag and folder
 TRASH="trash"       # trash maildir, gmail requires for real deletion
 
 # Note that the tag/folder values (INBOX/SENT/etc) must match
 # your local maildir names, after any nametrans by offlineimap. For
-# example, my own "All Mail" is translated by offlineimap to "archive"
-# (lowercase) and thus my ARCHIVE value is "archive".
+# example, my own "INBOX" is translated by offlineimap to "inbox"
+# (lowercase) and thus my INBOX value is "inbox".
 #
 # Again, please note that these ARE case sensitive values and must
 # match your local maildir as offlineimap creates it.
@@ -140,16 +139,44 @@ TRIM_ACCOUNT_PREFIX_IN_TAGS=true
 set -o errexit
 set -o nounset
 
+# FIXME add in real opt handling. See TAG_SCRIPT FIXME below for details
+
 # check for special run mode
 # --dry-run (-d)
 # --help    (-h)
 
 case ${1:-} in
-    *-h*) echo "usage: mail-index [--dry-run]"; exit; ;;
+    *-h*) echo "usage: $0 [--dry-run] subcmd maildir_account_root_path";
+	  echo "Valid sub commands are \"pre\" and \"post\"";
+	  exit;
+	  ;;
     *-d*) RUNCMD=echo; DRYRUN=true; DRYRUN_MSG="- DRYRUN (no changes will be made)"; shift; ;;
     *)    RUNCMD=eval; DRYRUN=false ;;
 esac
 
+
+# subcommands "pre" and "post" are listed after the options above and before
+# the $MAILDIR_ACCOUNT_ROOT path
+
+case ${1:-} in
+    pre)  SUBCMD="pre"; shift; ;;
+    post) SUBCMD="post"; shift; ;;
+    *) echo "usage: $0 [--dry-run] subcmd maildir_account_root_path";
+       echo "Valid sub commands are \"pre\" and \"post\"";
+       exit;
+       ;;
+esac
+
+
+# ----------------------------------------------------------------------
+# Custom tagging script
+# ----------------------------------------------------------------------
+
+# eval a custom tag script used in the post-hook, before we remove all
+# of the new tags
+# ----------------------------------------------------------------------
+
+TAG_SCRIPT=$HOME/.local/bin/tag_mailing_lists
 
 # ----------------------------------------------------------------------
 # Notmuch config checks
@@ -402,8 +429,12 @@ Notmuch_Folder_From_Full_Path ()
 # which is the full form searchable from notmuch using a query such as:
 #
 #     notmuch search folder:/work/INBOX
- 
-    echo "${1#$NOTMUCH_ROOT}"
+
+    # XXX MASSIVE PAIN IN THE ASS.
+    # Took me forever to figure out that I needed to remove the trailing
+    # slash from the command below. Likely ES is running 0.17 version of
+    # notmuch, or even older *shudder*
+    echo "${1#$NOTMUCH_ROOT/}"
 
 }
 
@@ -420,7 +451,7 @@ Maildir_Account_Folder_From_Full_Path ()
 # which is the full form searchable from notmuch using a query such as:
 #
 #     notmuch search folder:/work/INBOX
- 
+
     echo "${1#$MAILDIR_ACCOUNT_ROOT}"
 
 }
@@ -452,7 +483,6 @@ Notmuch_State_To_Maildir__Move_To_Maildir ()
     local THESE_MESSAGE_IDS_TO_COPY="$(\
         notmuch search --output=messages\
         tag:"$THIS_NOTMUCH_TAG" \
-        AND tag:"$ARCHIVE" \
         NOT folder:"$THIS_NOTMUCH_FOLDER" \
         NOT folder:"$TRASH" \
         NOT tag:"$NEW_TAG")"
@@ -460,9 +490,7 @@ Notmuch_State_To_Maildir__Move_To_Maildir ()
     # We are running this function prior to the remove function below
     # but there is still the edge case wherein the user has manually
     # deleted a mail message in mutt (better to do all this with tags
-    # and virtual folders, but let's accommodate). So we should either
-    # prioritize the archive folder or cycle through the list of paths
-    # till we find one that is usable.
+    # and virtual folders, but let's accommodate).
 
     for THIS_MESSAGE_ID in $THESE_MESSAGE_IDS_TO_COPY; do
 
@@ -471,7 +499,7 @@ Notmuch_State_To_Maildir__Move_To_Maildir ()
         local FOUND=false
 
         while read line; do
- 
+
             local THIS_MESSAGE_SOURCE_PATH="$line"
 
             if [[ -e "$THIS_MESSAGE_SOURCE_PATH" ]]; then
@@ -517,10 +545,6 @@ Notmuch_State_To_Maildir__Remove_From_Maildir ()
 # in the notmuch db). The number of folders associated with a message
 # has of course not yet changed. We need to remove the messages from
 # maildir folders from which it has been untagged.
-#
-# Note that the search below uses the $ARCHIVE folder/tag value
-# as a check that the messages have been previously indexed and processed
-# by this script.
 
     local THIS_MAILDIR_FULL_PATH="$1"
     local THIS_NOTMUCH_FOLDER="$(Notmuch_Folder_From_Full_Path $THIS_MAILDIR_FULL_PATH)"
@@ -528,7 +552,6 @@ Notmuch_State_To_Maildir__Remove_From_Maildir ()
     local THESE_MESSAGE_IDS_TO_REMOVE="$(\
         notmuch search --output=messages\
         folder:"$THIS_NOTMUCH_FOLDER" \
-        AND tag:"$ARCHIVE" \
         NOT tag:"$THIS_NOTMUCH_TAG" \
         NOT tag:"$NEW_TAG")"
 
@@ -568,6 +591,8 @@ Notmuch_State_To_Maildir__Remove_From_Maildir ()
 Notmuch_Update ()
 {
     $RUNCMD "notmuch new";
+    # FIXME pass TAG_SCRIPT as an argument
+    $RUNCMD $TAG_SCRIPT
 }
 
 # ----------------------------------------------------------------------
@@ -661,33 +686,31 @@ Notmuch_Cleanup ()
 # ----------------------------------------------------------------------
 
 echo -e "\n----------------------------------------------------------------------"
-echo "$(basename $0) start ${DRYRUN_MSG:-}"
+echo "$(basename $0) ${SUBCMD}-sync hook ${DRYRUN_MSG:-}"
 echo "----------------------------------------------------------------------"
 echo "NOTMUCH ROOT: $NOTMUCH_ROOT"
 echo "ACCOUNT ROOT: $MAILDIR_ACCOUNT_ROOT"
 
 # Review the notmuch database state and sync up any changes first
 # (e.g. any retagged messages that need refiling)
-
-for MAILBOX_FULL_PATH in $MAILBOXES_FULL_PATHS; do
-    Notmuch_State_To_Maildir__Move_To_Maildir $MAILBOX_FULL_PATH
-    Notmuch_State_To_Maildir__Remove_From_Maildir $MAILBOX_FULL_PATH
-done
+if [ "$SUBCMD" == "pre" ]; then
+    for MAILBOX_FULL_PATH in $MAILBOXES_FULL_PATHS; do
+        Notmuch_State_To_Maildir__Move_To_Maildir $MAILBOX_FULL_PATH
+        Notmuch_State_To_Maildir__Remove_From_Maildir $MAILBOX_FULL_PATH
+    done
+fi
 
 # Update the notmuch database to reflect the changes we just made,
 # if any (so it can find the new messages)
+if [ "$SUBCMD" == "post" ]; then
+    Notmuch_Update
 
-# TODO: ideally, would we want to sync offlineimap right before this?
-# thus splitting the script into pre and post sync modes?
+    for MAILBOX_FULL_PATH in $MAILBOXES_FULL_PATHS; do
+        Maildir_State_To_Notmuch__Add_Tags_To_Notmuch $MAILBOX_FULL_PATH
+        Maildir_State_To_Notmuch__Remove_Tags_From_Notmuch $MAILBOX_FULL_PATH
+    done
 
-Notmuch_Update
-
-for MAILBOX_FULL_PATH in $MAILBOXES_FULL_PATHS; do
-    Maildir_State_To_Notmuch__Add_Tags_To_Notmuch $MAILBOX_FULL_PATH
-    Maildir_State_To_Notmuch__Remove_Tags_From_Notmuch $MAILBOX_FULL_PATH
-done
-
-Notmuch_Cleanup
+    Notmuch_Cleanup
+fi
 
 echo -e "maildir-notmuch-sync complete ----------------------------------------\n"
-
